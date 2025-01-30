@@ -1,0 +1,88 @@
+---
+
+- name: SourceHut - Tags block
+  tags: upgrade
+  block:
+    - name: SourceHut - Copy config.ini
+      ansible.builtin.template:
+        src: files/sourcehut.j2
+        dest: /etc/sr.ht/config.ini
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: SourceHut Config - Generate keys
+      ansible.builtin.command: "sr.ht-keygen {{ arg }}"
+      changed_when: false
+      register: srht_config_keygen
+      loop: [service, network, webhook]
+      loop_control:
+        loop_var: arg
+      failed_when: >
+        (srht_config_keygen.stdout_lines | length > 2) or
+        (srht_config_keygen.stdout_lines | length == 1 and 'Secret key: ' not in srht_config_keygen.stdout) or
+        (srht_config_keygen.stdout_lines | length == 2 and
+        ('Private key: ' not in srht_config_keygen.stdout_lines[0] or 'Public key: ' not in srht_config_keygen.stdout_lines[1]))
+
+    - name: SourceHut Config - Populate keys
+      ansible.builtin.lineinfile:
+        path: /etc/sr.ht/config.ini
+        insertafter: "[{{ entry.section }}]"
+        regexp: "{{ entry.key }}=%AUTO%"
+        line: '{{ entry.key }}={{ entry.value }}'
+      loop:
+        - { section: 'sr\.ht', key: 'service-key', value: "{{ srht_config_keygen.results[0].stdout | replace('Secret key: ', '') }}" }
+        - { section: 'sr\.ht', key: 'network-key', value: "{{ srht_config_keygen.results[1].stdout | replace('Secret key: ', '') }}" }
+        - { section: 'webhooks', key: 'private-key', value: "{{ srht_config_keygen.results[2].stdout_lines[0] | replace('Private key: ', '') }}" }
+      loop_control:
+        loop_var: entry
+
+    - name: SourceHut Config - Generate oauth
+      ansible.builtin.command: >-
+        python -c "from binascii import hexlify;
+        from hashlib import sha512;
+        from os import urandom;
+        secret=hexlify(urandom(16)).decode();
+        print('Client:{{ client }}');
+        print('Secret:'+secret);
+        print('Hash:'+sha512(secret.encode()).hexdigest())"
+      changed_when: false
+      register: srht_config_oauth
+      loop: "{{ cfg.srht.modules | reject('equalto', 'meta') }}"
+      loop_control:
+        loop_var: client
+      failed_when: >
+        (srht_config_oauth.stdout_lines | length != 3) or
+        ('Client:' not in srht_config_oauth.stdout_lines[0]) or
+        ('Secret:' not in srht_config_oauth.stdout_lines[1]) or
+        ('Hash:' not in srht_config_oauth.stdout_lines[2])
+
+    - name: SourceHut Config - Set oauth facts
+      ansible.builtin.set_fact:
+        srht_oauth: "{{ srht_oauth | default([]) +
+          [{'client': oauth_cmd.stdout_lines[0] | replace('Client:', ''),
+          'secret': oauth_cmd.stdout_lines[1] | replace('Secret:', ''),
+          'hash': oauth_cmd.stdout_lines[2] | replace('Hash:', '')}] }}"
+      loop: "{{ srht_config_oauth.results }}"
+      loop_control:
+        loop_var: oauth_cmd
+
+    - name: SourceHut Config - Populate oauth ids # noqa risky-file-permissions
+      community.general.ini_file:
+        path: /etc/sr.ht/config.ini
+        section: "[{{ oauth_entry.client }}.sr.ht]"
+        option: "oauth-client-id"
+        value: "{{ oauth_entry.client }}"
+      loop: "{{ srht_oauth }}"
+      loop_control:
+        loop_var: oauth_entry
+
+    - name: SourceHut Config - Populate oauth secrets # noqa risky-file-permissions
+      community.general.ini_file:
+        path: /etc/sr.ht/config.ini
+        section: "[{{ oauth_entry.client }}.sr.ht]"
+        option: "oauth-client-secret"
+        value: "{{ oauth_entry.secret }}"
+      loop: "{{ srht_oauth }}"
+      loop_control:
+        loop_var: oauth_entry

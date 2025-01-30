@@ -1,0 +1,34 @@
+# not supposed to be edited
+
+srht_services:
+  meta:
+    daemons: [meta.sr.ht, meta.sr.ht-api, meta.sr.ht-webhooks]
+    cron:
+      - '0 6 * * * | meta.sr.ht-daily'
+  hub:
+    daemons: [hub.sr.ht, hub.sr.ht-api]
+    cron: []
+  hg:
+    daemons: [hg.sr.ht, hg.sr.ht-api]
+    cron:
+      - '*/20 * * * * | hg.sr.ht-periodic'
+      - '0 6 * * * | hg.sr.ht-clonebundles' # optional but recommended
+  git:
+    daemons: [git.sr.ht, git.sr.ht-api, git.sr.ht-webhooks]
+    cron:
+      - '*/20 * * * * | git.sr.ht-periodic'
+  man:
+    daemons: [man.sr.ht, man.sr.ht-api]
+    cron: []
+  builds:
+    daemons: [builds.sr.ht, builds.sr.ht-api, builds.sr.ht-worker]
+    cron: []
+  lists:
+    daemons: [lists.sr.ht, lists.sr.ht-api, lists.sr.ht-lmtp, lists.sr.ht-process, lists.sr.ht-webhooks]
+    cron: []
+  todo:
+    daemons: [todo.sr.ht, todo.sr.ht-api, todo.sr.ht-lmtp, todo.sr.ht-webhooks]
+    cron: []
+  paste:
+    daemons: [paste.sr.ht, paste.sr.ht-api]
+    cron: []

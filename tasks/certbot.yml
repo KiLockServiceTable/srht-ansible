@@ -1,0 +1,37 @@
+---
+
+- name: Certbot - Create LetsEncrypt folder
+  ansible.builtin.file:
+    path: /etc/letsencrypt
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Certbot - Create Cloudflare API file
+  ansible.builtin.copy:
+    dest: /etc/letsencrypt/dnscloudflare.ini
+    content: "dns_cloudflare_api_token = {{ cfg.services.certbot.cf_token }}"
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Certbot - Generate certificate
+  tags: upgrade
+  ansible.builtin.command: "certbot certonly --non-interactive --agree-tos --dns-cloudflare --dns-cloudflare-credentials
+    /etc/letsencrypt/dnscloudflare.ini --dns-cloudflare-propagation-seconds 60 -m {{ cfg.services.certbot.email }} -d {{ domain }}"
+  register: certbot_check
+  changed_when: false
+  failed_when:
+    - "'Successfully received certificate' not in certbot_check.stdout"
+    - "'Certificate not yet due for renewal' not in certbot_check.stdout"
+  loop: "{{ [srht_domains['wildcard']] if cfg.services.certbot.wildcard else (srht_domains.values() | list)[1:] }}"
+  loop_control:
+    loop_var: domain
+
+- name: Certbot - Add renewal to crontab
+  ansible.builtin.cron:
+    name: run certbot renewal
+    hour: '6'
+    minute: '0'
+    job: 'certbot renew --post-hook "rc-service nginx restart"'

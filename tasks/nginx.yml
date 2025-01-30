@@ -1,0 +1,80 @@
+---
+
+- name: Nginx - Remove default.conf file from http.d
+  ansible.builtin.file:
+    path: /etc/nginx/http.d/default.conf
+    state: absent
+
+- name: Nginx - Download mime.types file from official GitHub
+  ansible.builtin.get_url:
+    url: https://raw.githubusercontent.com/nginx/nginx/refs/heads/master/conf/mime.types
+    dest: /etc/nginx/mime.types
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Nginx - Download fastcgi_params file from official GitHub
+  ansible.builtin.get_url:
+    url: https://raw.githubusercontent.com/nginx/nginx/refs/heads/master/conf/fastcgi_params
+    dest: /etc/nginx/fastcgi_params
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Nginx - Remove spam.conf include from meta.sr.ht.conf
+  ansible.builtin.lineinfile:
+    path: /etc/nginx/http.d/meta.sr.ht.conf
+    search_string: 'include spam.conf'
+    state: absent
+  when: "'meta' in cfg.srht.modules"
+
+- name: Nginx - Remove preset set_real_ip_from entries
+  ansible.builtin.replace:
+    path: /etc/nginx/sourcehut.conf
+    regexp: 'set_real_ip_from .*;\n'
+    replace: ''
+
+- name: Nginx - Add own set_real_ip_from entries
+  ansible.builtin.lineinfile:
+    path: /etc/nginx/sourcehut.conf
+    insertafter: 'set \$python ".*";'
+    line: "set_real_ip_from {{ ip }};"
+    state: present
+  loop: "{{ cfg.srht.real_ips }}"
+  loop_control:
+    loop_var: ip
+
+- name: Nginx - Create SSL conf for LetsEncrypt certificate
+  tags: upgrade
+  ansible.builtin.copy:
+    dest: "{{ '/etc/nginx/' + [module, 'srht'][module == 'wildcard'] + '-ssl.conf' }}"
+    content: |
+      ssl_certificate /etc/letsencrypt/live/{{ [srht_domains[module], cfg.srht.domain][module == 'wildcard'] }}/fullchain.pem;
+      ssl_certificate_key /etc/letsencrypt/live/{{ [srht_domains[module], cfg.srht.domain][module == 'wildcard'] }}/privkey.pem;
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ ['wildcard'] if cfg.services.certbot.wildcard else cfg.srht.modules }}"
+  loop_control:
+    loop_var: module
+
+- name: Nginx - Replace predefined SSL imports to wildcard
+  tags: upgrade
+  ansible.builtin.replace:
+    path: "/etc/nginx/http.d/{{ file }}.sr.ht.conf"
+    regexp: "include {{ file }}-ssl.conf;"
+    replace: 'include srht-ssl.conf;'
+  when: cfg.services.certbot.wildcard
+  loop: "{{ cfg.srht.modules }}"
+  loop_control:
+    loop_var: file
+
+- name: Nginx - Replace predefined server_names
+  tags: upgrade
+  ansible.builtin.replace:
+    path: "/etc/nginx/http.d/{{ file }}.sr.ht.conf"
+    regexp: "server_name {{ file }}.sr.ht;"
+    replace: "server_name {{ srht_domains[file] }};"
+  loop: "{{ cfg.srht.modules }}"
+  loop_control:
+    loop_var: file

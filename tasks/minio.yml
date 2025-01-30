@@ -1,0 +1,20 @@
+---
+
+- name: Minio - Edit OpenRC config
+  ansible.builtin.replace:
+    path: /etc/conf.d/minio
+    regexp: '{{ entry.key }}=".*"'
+    replace: '{{ entry.key[1:] if "#" in entry.key else entry.key }}="{{ entry.value }}"'
+  loop:
+    - { key: '#data_dirs', value: "{{ cfg.services.minio.dir | default('/var/lib/minio/data') }}" }
+    - { key: 'MINIO_ROOT_USER', value: "{{ cfg.services.minio.user }}" }
+    - { key: 'MINIO_ROOT_PASSWORD', value: "{{ cfg.services.minio.pass }}" }
+  loop_control:
+    loop_var: entry
+  no_log: true
+
+- name: Minio - Enable and start service
+  ansible.builtin.service:
+    name: minio
+    enabled: true
+    state: started

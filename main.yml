@@ -1,0 +1,190 @@
+---
+
+- name: "SourceHut deployment for Alpine 3.20"
+  hosts: vm
+  vars_files:
+    - constants/srht_services.yml
+  tasks:
+
+    - name: Validation - Check config's SourceHut modules
+      tags: upgrade
+      ansible.builtin.debug:
+        msg: "Checking if {{ srht_module }} exists in srht_services"
+      failed_when: not (srht_services[srht_module] is defined)
+      loop: "{{ cfg.srht.modules }}"
+      loop_control:
+        loop_var: srht_module
+
+    - name: SSH - Add key
+      ansible.posix.authorized_key:
+        user: "{{ ansible_ssh_user }}"
+        state: present
+        key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
+
+    - name: Services - Stop SourceHut services if running
+      tags: upgrade
+      ansible.builtin.service:
+        name: "{{ svc }}"
+        state: stopped
+      loop: "{{ cfg.srht.modules | map('extract', srht_services) | map(attribute='daemons') | flatten }}"
+      loop_control:
+        loop_var: svc
+
+    - name: Packages - Add SourceHut's key
+      ansible.builtin.get_url:
+        url: https://mirror.sr.ht/alpine/alpine@sr.ht.rsa.pub
+        dest: /etc/apk/keys/alpine@sr.ht.rsa.pub
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Packages - Modify repositories file
+      ansible.builtin.copy:
+        dest: /etc/apk/repositories
+        content: |
+          #/media/cdrom/apks
+          http://dl-cdn.alpinelinux.org/alpine/v3.20/main
+          http://dl-cdn.alpinelinux.org/alpine/v3.20/community
+          https://mirror.sr.ht/alpine/v3.20/sr.ht
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Packages - Update & upgrade
+      tags: upgrade
+      community.general.apk:
+        update_cache: true
+        upgrade: true
+
+    - name: Packages - Install required packages
+      community.general.apk:
+        name: >-
+          certbot,certbot-dns-cloudflare,nginx,sr.ht-nginx,fcgiwrap,py3-passlib
+          {{ ',postgresql16,postgresql16-contrib,postgresql16-openrc' if cfg.services.postgres is defined else '' }}
+          {{ ',nfs-utils' if cfg.services.nfs is defined else '' }}
+          {{ ',redict' if cfg.services.redict is defined else '' }}
+          {{ ',minio' if cfg.services.minio is defined else '' }}
+        state: present
+
+    - name: Packages - Install SourceHut services
+      tags: upgrade
+      community.general.apk:
+        name: >-
+          {{ svc }}.sr.ht,{{ svc }}.sr.ht-nginx,
+        state: present
+      loop: "{{ cfg.srht.modules }}"
+      loop_control:
+        loop_var: svc
+
+    - name: SourceHut - Run tasks for config
+      tags: [init-srhtcfg, upgrade]
+      ansible.builtin.include_tasks: tasks/srht/config.yml
+      when: cfg.srht.init_cfg
+
+    - name: SourceHut - Read config
+      tags: upgrade
+      ansible.builtin.slurp:
+        src: /etc/sr.ht/config.ini
+      register: srht_config_file
+
+    - name: SourceHut - Set domain facts
+      tags: upgrade
+      ansible.builtin.set_fact:
+        srht_domains: "{{ srht_domains|default({ 'wildcard': '*.' + cfg.srht.domain }) |
+          combine( { svc : srht_config_file.content | b64decode | regex_search('\\['+svc+'\\.sr\\.ht\\](?:.|\n)*?^origin=(.*)$', '\\1', multiline=True) |
+            first | regex_replace('http(s)?:\/\/', '') } ) }}"
+      loop: "{{ cfg.srht.modules }}"
+      loop_control:
+        loop_var: svc
+
+    - name: SourceHut - Set path facts
+      tags: upgrade
+      ansible.builtin.set_fact:
+        srht__git_dir: "{{ srht_config_file.content | b64decode | regex_search('\\[git\\.sr\\.ht\\](?:.|\n)*?^repos=(.*)$', multiline=True) | first }}"
+
+    - name: SourceHut - Create GPG folder
+      ansible.builtin.file:
+        path: /etc/sr.ht/gpg
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: SourceHut - Copy GPG keys
+      ansible.builtin.copy:
+        src: "files/gpg_{{ file }}.asc"
+        dest: "/etc/sr.ht/gpg/{{ file }}.asc"
+        owner: root
+        group: root
+        mode: '0644'
+      loop: [private, public]
+      loop_control:
+        loop_var: file
+
+    - name: NFS - Run tasks
+      tags: init-nfs
+      ansible.builtin.include_tasks: tasks/nfs.yml
+      when: cfg.services.nfs is defined
+
+    - name: Postgres - Run tasks
+      tags: [init-pq, upgrade]
+      ansible.builtin.include_tasks: tasks/psql.yml
+      when: cfg.services.postgres is defined or cfg.srht.init_cfg
+
+    - name: Minio - Run tasks
+      tags: init-minio
+      ansible.builtin.include_tasks: tasks/minio.yml
+      when: cfg.services.minio is defined
+
+    - name: Redict - Enable and start service
+      ansible.builtin.service:
+        name: redict
+        enabled: true
+        state: started
+      when: cfg.services.redict is defined
+
+    - name: Certbot - Run tasks
+      tags: [init-certbot, upgrade]
+      ansible.builtin.include_tasks: tasks/certbot.yml
+      when: cfg.services.certbot is defined
+
+    - name: Nginx - Run tasks
+      tags: [init-nginx, upgrade]
+      ansible.builtin.include_tasks: tasks/nginx.yml
+
+    - name: SourceHut [git] - Run tasks
+      tags: [init-srhtgit, upgrade]
+      ansible.builtin.include_tasks: tasks/srht/git.yml
+      when: "'git' in cfg.srht.modules"
+
+    - name: SourceHut - Run tasks for OpenRC services
+      tags: [init-srhtsvc, upgrade]
+      ansible.builtin.include_tasks: tasks/srht/services.yml
+      loop: "{{ cfg.srht.modules }}"
+      loop_control:
+        loop_var: srht_module
+
+    - name: Services - Enable and start nginx
+      tags: upgrade
+      ansible.builtin.service:
+        name: nginx
+        enabled: true
+        state: restarted
+
+    - name: Services - Restart sshd
+      tags: upgrade
+      ansible.builtin.service:
+        name: sshd
+        enabled: true
+        state: restarted
+
+  handlers:
+
+    - name: Handler - Init SourceHut DBs
+      ansible.builtin.command: "{{ svc }}.sr.ht-initdb"
+      register: psql_srht_initdb
+      changed_when: false
+      failed_when: psql_srht_initdb.stdout_lines
+      loop: "{{ psql_srht_createdb.results | selectattr('changed', 'equalto', true) | map(attribute='db') | list }}"
+      loop_control:
+        loop_var: svc

@@ -1,0 +1,34 @@
+---
+
+cfg:
+  srht:
+    domain: "srht.local"
+    modules: [meta, git]
+    init_cfg: true
+    init_users: true
+    real_ips: []
+    users:
+      - id: 3
+        name: "username"
+        email: "email@srht.local"
+        pass: "password"
+        role: "ADMIN"
+  services:
+    # nfs:
+    #   users: [git, minio, postgres]
+    #   gid: 1997
+    #   list:
+    #     - dir: "/mnt/nfs"
+    #       src: "ip:/dir"
+    #       opts: "vers=4.2,noexec,nosuid,rsize=1048576,wsize=1048576"
+    postgres: true
+      # dir: "/mnt/nfs/postgres"
+    minio:
+      user: "srht"
+      pass: "password"
+      # dir: "/mnt/nfs/minio"
+    redict: true
+    certbot:
+      email: "srht@domain.com"
+      cf_token: "{{ vault.cf_token }}"
+      wildcard: true

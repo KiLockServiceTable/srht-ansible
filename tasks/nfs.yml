@@ -1,0 +1,41 @@
+---
+
+- name: NFS - Create group for permissions
+  ansible.builtin.group:
+    name: srht-nfs
+    gid: "{{ cfg.services.nfs.gid }}"
+
+- name: NFS - Reboot system
+  ansible.builtin.reboot:
+    connect_timeout: 60
+    post_reboot_delay: 20
+
+- name: NFS - Add users to group
+  ansible.builtin.user:
+    name: "{{ user }}"
+    append: true
+    groups: srht-nfs
+  loop: "{{ cfg.services.nfs.users }}"
+  loop_control:
+    loop_var: user
+
+- name: NFS - Enable and start nfsclient and netmount
+  ansible.builtin.service:
+    name: "{{ svc }}"
+    enabled: true
+    state: started
+  loop: [nfsclient, netmount]
+  loop_control:
+    loop_var: svc
+
+- name: NFS - Mount folders
+  ansible.posix.mount:
+    src: "{{ entry.src }}"
+    path: "{{ entry.dir }}"
+    state: mounted
+    fstype: nfs
+    opts: "{{ entry.opts }}"
+    boot: true
+  loop: "{{ cfg.services.nfs.list }}"
+  loop_control:
+    loop_var: entry

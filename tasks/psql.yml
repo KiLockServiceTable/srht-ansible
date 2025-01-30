@@ -1,0 +1,104 @@
+---
+
+- name: Postgres - Edit OpenRC config
+  ansible.builtin.replace:
+    path: /etc/conf.d/postgresql
+    regexp: '{{ entry.key }}=".*"'
+    replace: '{{ entry.key[1:] if "#" in entry.key else entry.key }}="{{ entry.value }}"'
+  loop:
+    - { key: '#data_dir', value: "{{ cfg.services.postgres.dir }}" }
+    - { key: '#conf_dir', value: "{{ cfg.services.postgres.dir }}" }
+  loop_control:
+    loop_var: entry
+  when: cfg.services.postgres.dir is defined
+
+- name: Postgres - Enable and start service
+  ansible.builtin.service:
+    name: postgresql
+    enabled: true
+    state: started
+  when: cfg.services.postgres is defined
+
+- name: Postgres - Create DBs for SourceHut
+  tags: upgrade
+  community.postgresql.postgresql_db:
+    name: "{{ db }}.sr.ht"
+    comment: "Database for SourceHut's `{{ db }}` service"
+    state: present
+  when: cfg.srht.init_cfg
+  register: psql_srht_createdb
+  loop: "{{ cfg.srht.modules }}"
+  loop_control:
+    loop_var: db
+  notify:
+    - Handler - Init SourceHut DBs
+
+- name: Ansible - Run handlers
+  tags: upgrade
+  ansible.builtin.meta: flush_handlers
+
+- name: Postgres - Clean oauth entries in case they exist
+  tags: upgrade
+  community.postgresql.postgresql_query:
+    db: meta.sr.ht
+    query: DELETE FROM oauthclient;
+  when: cfg.srht.init_cfg
+
+- name: Postgres - User creation tasks
+  when: cfg.srht.init_users
+  block:
+    - name: Postgres - Hash SourceHut password
+      ansible.builtin.command: >-
+        python -c "from metasrht.auth.builtin import hash_password;
+        print('Hash:'+hash_password('{{ user.pass }}'));"
+      changed_when: false
+      register: psql_srht_hashpass
+      loop: "{{ cfg.srht.users }}"
+      loop_control:
+        loop_var: user
+      failed_when: >
+        (psql_srht_hashpass.stdout_lines | length > 1) or
+        ('Hash:' not in psql_srht_hashpass.stdout)
+      no_log: true
+
+    - name: Postgres - Insert user entry to meta.sr.ht DB
+      community.postgresql.postgresql_query:
+        db: meta.sr.ht
+        query: >-
+          INSERT INTO "user" (password, pgp_key_id, payment_status, payment_due, payment_processor_id, welcome_emails,
+            id, created, updated, username, email, user_type, url, location, bio, suspension_notice)
+          VALUES ('{{ psql_srht_hashpass.results[idx].stdout | replace('Hash:', '') }}', NULL, 'UNPAID', NULL, 0, 0,
+            {{ user.id }}, NOW(), NOW(), '{{ user.name }}', '{{ user.email }}', '{{ user.role }}', '', '', '', '')
+      loop: "{{ cfg.srht.users }}"
+      loop_control:
+        loop_var: user
+        index_var: idx
+      no_log: true
+
+- name: Postgres - Insert oauthclient entries to meta.sr.ht DB
+  tags: upgrade
+  community.postgresql.postgresql_query:
+    db: meta.sr.ht
+    query: >-
+      INSERT INTO oauthclient (client_name, client_id, client_secret_hash, client_secret_partial, redirect_uri,
+        preauthorized, id, created, updated, user_id)
+      VALUES ('{{ oauth_entry.client }}', '{{ oauth_entry.client }}', '{{ oauth_entry.hash }}', '{{ oauth_entry.secret[:8] }}',
+        'http{{ ['', 's'][cfg.services.certbot is defined] }}://{{ srht_domains[oauth_entry.client] }}/oauth/callback', TRUE, {{ idx + 1 }},
+        NOW(), NOW(), {{ cfg.srht.users[0].id }})
+  when: cfg.srht.init_cfg
+  loop: "{{ srht_oauth }}"
+  loop_control:
+    loop_var: oauth_entry
+    index_var: idx
+
+- name: Postgres - Run SourceHut migrations
+  tags: upgrade
+  ansible.builtin.command: "sr.ht-migrate {{ svc }}.sr.ht upgrade head && {{ svc }}.sr.ht-migrate upgrade head"
+  register: psql_srht_migratedb
+  changed_when: false
+  failed_when: >
+    ('FAILED' in psql_srht_migratedb.stdout_lines) or
+    ('ERROR' in psql_srht_migratedb.stdout_lines)
+  loop: "{{ cfg.srht.modules }}"
+  loop_control:
+    loop_var: svc

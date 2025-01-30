@@ -1,0 +1,22 @@
+---
+
+- name: SourceHut - Add crontab entries for {{ srht_module }}
+  tags: upgrade
+  ansible.builtin.cron:
+    name: "run srht's {{ srht_module + '.sr.ht-' + cron | split(' | ') | last }}"
+    hour: "{{ (cron | split(' | ') | first | split(' '))[1] }}"
+    minute: "{{ cron | split(' | ') | first | split(' ') | first }}"
+    job: "{{ cron | split(' | ') | last }}"
+  loop: "{{ srht_services[srht_module].cron }}"
+  loop_control:
+    loop_var: cron
+
+- name: SourceHut - Enable and start services for {{ srht_module }}
+  tags: upgrade
+  ansible.builtin.service:
+    name: "{{ svc }}"
+    enabled: true
+    state: started
+  loop: "{{ srht_services[srht_module].daemons }}"
+  loop_control:
+    loop_var: svc

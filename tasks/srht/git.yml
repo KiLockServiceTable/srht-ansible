@@ -1,0 +1,42 @@
+---
+
+- name: SourceHut [git] - Create missing logs
+  tags: upgrade
+  ansible.builtin.file:
+    path: "/var/log/git.sr.ht-{{ filename }}"
+    state: touch
+    owner: git
+    group: git
+    mode: '0644'
+  loop: [dispath, keys, shell, update-hook]
+  loop_control:
+    loop_var: filename
+
+- name: SourceHut [git] - Set user a random password so it can be SSHed into
+  tags: upgrade
+  ansible.builtin.user:
+    user: git
+    password: "{{ lookup('ansible.builtin.password', '/dev/null', chars=['ascii_letters', 'digits']) |
+      password_hash('sha512', 'salt') }}"
+
+- name: SourceHut [git] - Ensure permissions for repos folder
+  tags: upgrade
+  ansible.builtin.file:
+    path: "{{ srht__git_dir }}"
+    state: directory
+    owner: git
+    group: git
+    mode: '0755'
+    recurse: true
+
+- name: SourceHut [git] - Add SSH dispatcher to sshd_config
+  tags: upgrade
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config
+    content: |
+      PasswordAuthentication no
+      PermitRootLogin no
+      AuthorizedKeysCommand=/usr/bin/git.sr.ht-dispatch "%u" "%h" "%t" "%k"
+      AuthorizedKeysCommandUser=root
+      PermitUserEnvironment SRHT_*
+    mode: '0644'
